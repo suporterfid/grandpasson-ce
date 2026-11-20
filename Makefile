@@ -1,0 +1,62 @@
+.PHONY: up down install migrate test build check-migrations tools cron seed-client admin
+
+up:
+	@test -f .env || cp .env.example .env
+	@test -d vendor || $(MAKE) install
+	docker compose up -d --build
+
+# Composer in Docker (the build image), as your user, so vendor/ is not root-owned.
+# Needed in a checkout without vendor/ (the Community Edition does not ship it).
+install:
+	docker compose -f docker-compose.build.yml run --rm --build --user "$$(id -u):$$(id -g)" \
+		-e HOME=/tmp -e COMPOSER_HOME=/tmp/composer build \
+		composer install --no-interaction --prefer-dist --no-progress
+
+tools:
+	docker compose --profile tools up -d phpmyadmin
+
+cron:
+	docker compose --profile cron up -d --build cron
+
+down:
+	docker compose --profile tools --profile cron down
+
+migrate:
+	php cron/migrate.php
+
+seed-client:
+	@test -n "$(CLIENT_ID)" || (echo "CLIENT_ID is required" >&2; exit 1)
+	@test -n "$(REDIRECT_URI)" || (echo "REDIRECT_URI is required" >&2; exit 1)
+	@test -n "$(SECRET)" || (echo "SECRET is required" >&2; exit 1)
+	php cron/seed_oauth_client.php \
+		--client-id="$(CLIENT_ID)" \
+		--name="$(or $(NAME),$(CLIENT_ID))" \
+		--redirect-uri="$(REDIRECT_URI)" \
+		--secret="$(SECRET)"
+
+admin:
+	php cron/admin.php $(ARGS)
+
+check-migrations:
+	@diff -rq app/Infrastructure/Db/Migrations docker/mysql/init
+
+test:
+	php vendor/bin/phpunit
+
+build:
+	docker compose -f docker-compose.build.yml run --rm --build build
+
+cleanup-sessions:
+	php cron/cleanup_sessions.php
+
+cleanup-auth-codes:
+	php cron/cleanup_auth_codes.php
+
+cleanup-access-tokens:
+	php cron/cleanup_access_tokens.php
+
+cleanup-audit-log:
+	php cron/cleanup_audit_log.php
+
+cleanup-email-otp:
+	php cron/cleanup_email_otp.php
